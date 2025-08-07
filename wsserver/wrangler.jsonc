@@ -2,7 +2,15 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "reacomp-weaver-ws",
   "main": "src/index.ts",
-  "compatibility_date": "2025-07-29"
+  "compatibility_date": "2025-07-29",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SIGNALING",
+        "class_name": "SignalingDurableObject"
+      }
+    ]
+  }
   // "compatibility_flags": [
   //   "nodejs_compat"
   // ],
