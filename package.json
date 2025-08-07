@@ -1,0 +1,14 @@
+{
+  "name": "reacomp-weaver",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "front": "pnpm --filter 'reacomp-weaver-front'",
+    "ws": "pnpm --filter 'reacomp-weaver-ws'"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.13.1"
+}
