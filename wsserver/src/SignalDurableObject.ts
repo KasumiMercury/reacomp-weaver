@@ -11,7 +11,7 @@ type SessionData = {
   subscribedTopics: Set<string>
   alive: boolean
   quit: boolean
-  intervalId?: number
+  intervalId?: ReturnType<typeof setInterval>
 }
 
 type WebSocketMessageType = 'ping' | 'pong' | 'publish' | 'subscribe' | 'unsubscribe';
