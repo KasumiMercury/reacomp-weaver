@@ -1,16 +1,16 @@
 import {DurableObject} from "cloudflare:workers";
 import type {Env} from "hono";
 
-interface SignalDurableObjectConfig {
-  heartbeatInterval: number;
-  maxReconnectAttempts: number;
-}
+const wsReadyStateConnecting = 0
+const wsReadyStateOpen = 1
+
+const pingTimeout = 30000
 
 type SessionData = {
   websocket: WebSocket
   subscribedTopics: Set<string>
-  alive: boolean
-  quit: boolean
+  closed: boolean
+  pongReceived: boolean
   intervalId?: ReturnType<typeof setInterval>
 }
 
@@ -54,18 +54,12 @@ export class SignalDurableObject extends DurableObject<Env> {
   state: DurableObjectState
   sessions: Map<WebSocket, SessionData>
   topics: Map<string, Set<WebSocket>>
-  private readonly config: SignalDurableObjectConfig
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-
     this.state = ctx;
     this.sessions = new Map();
     this.topics = new Map();
-    this.config = {
-      heartbeatInterval: 30000,
-      maxReconnectAttempts: 3
-    };
   }
 
   async fetch(): Promise<Response> {
@@ -86,88 +80,71 @@ export class SignalDurableObject extends DurableObject<Env> {
     const session: SessionData = {
       websocket: ws,
       subscribedTopics: new Set(),
-      alive: true,
-      quit: false,
+      closed: false,
+      pongReceived: true,
     };
 
     this.sessions.set(ws, session);
+    this.setupPingPong(ws, session);
+    this.setupEventListeners(ws, session);
+  }
 
+  private setupPingPong(ws: WebSocket, session: SessionData): void {
     const pingInterval = setInterval(() => {
-      if (!session.alive) {
-        this.closeSession(ws);
-        clearInterval(pingInterval);
+      if (!session.pongReceived) {
+        ws.close()
+        clearInterval(pingInterval)
       } else {
-        session.alive = false;
+        session.pongReceived = false
         try {
-          this.send(ws, {type: 'ping'});
-        } catch (err) {
-          this.handleError('Error sending ping', err);
-          this.closeSession(ws);
-          clearInterval(pingInterval);
+          (ws as any).ping()
+        } catch (e) {
+          ws.close()
         }
       }
-    }, this.config.heartbeatInterval);
+    }, pingTimeout)
     
     session.intervalId = pingInterval;
+  }
+
+  private setupEventListeners(ws: WebSocket, session: SessionData): void {
+    ws.addEventListener('pong', () => {
+      session.pongReceived = true
+    })
 
     ws.addEventListener('close', () => {
       this.cleanupSession(session);
       this.closeSession(ws);
     })
 
-    ws.addEventListener('error', (err) => {
-      this.handleError('WebSocket error', err);
+    ws.addEventListener('error', () => {
       this.cleanupSession(session);
       this.closeSession(ws);
     })
 
-    ws.addEventListener('message', async (message) => {
-        try {
-            const parsedMessage = this.parseMessage(message.data);
-            if (parsedMessage) {
-                await this.handleMessage(ws, parsedMessage, session);
-            }
-        } catch (err) {
-            this.handleError('Error handling message', err);
-        }
+    ws.addEventListener('message', async (event) => {
+      const parsedMessage = this.parseMessage(event.data);
+      if (parsedMessage && !session.closed) {
+        await this.handleMessage(ws, parsedMessage, session);
+      }
     })
   }
 
-  private parseMessage(data: string): WebSocketMessage | null {
+  private parseMessage(data: any): WebSocketMessage | null {
     try {
-      const parsed = JSON.parse(data);
-      if (!this.isValidMessage(parsed)) {
-        this.handleError('Invalid message format', new Error('Message does not match expected schema'));
-        return null;
+      let message: any
+      if (typeof data === 'string') {
+        message = JSON.parse(data)
+      } else {
+        message = JSON.parse(new TextDecoder().decode(data))
       }
-      return parsed;
-    } catch (err) {
-      this.handleError('Failed to parse message', err);
+      // Lenient validation like sample - just check basic structure
+      if (message && message.type) {
+        return message;
+      }
       return null;
-    }
-  }
-
-  private isValidMessage(obj: any): obj is WebSocketMessage {
-    if (!obj || typeof obj !== 'object' || typeof obj.type !== 'string') {
-      return false;
-    }
-
-    const validTypes: WebSocketMessageType[] = ['ping', 'pong', 'publish', 'subscribe', 'unsubscribe'];
-    if (!validTypes.includes(obj.type)) {
-      return false;
-    }
-
-    switch (obj.type) {
-      case 'subscribe':
-      case 'unsubscribe':
-        return Array.isArray(obj.topics) && obj.topics.every((t: any) => typeof t === 'string');
-      case 'publish':
-        return typeof obj.topic === 'string';
-      case 'ping':
-      case 'pong':
-        return true;
-      default:
-        return false;
+    } catch (e) {
+      return null;
     }
   }
 
@@ -176,14 +153,14 @@ export class SignalDurableObject extends DurableObject<Env> {
       message: WebSocketMessage,
       session: SessionData
   ) {
-    if (session.quit) return;
+    if (session.closed) return;
 
     switch (message.type) {
       case "subscribe":
-        this.handleSubscribe(ws, message.topics, session);
+        this.handleSubscribe(ws, message.topics || [], session);
         break;
       case "unsubscribe":
-        this.handleUnsubscribe(ws, message.topics, session);
+        this.handleUnsubscribe(ws, message.topics || [], session);
         break;
       case "publish":
         this.handlePublish(message);
@@ -192,7 +169,7 @@ export class SignalDurableObject extends DurableObject<Env> {
         await this.send(ws, {type: "pong"});
         break;
       case "pong":
-        session.alive = true;
+        session.pongReceived = true;
         break;
     }
   }
@@ -202,8 +179,8 @@ export class SignalDurableObject extends DurableObject<Env> {
       topics: string[],
       session: SessionData
   ) {
-    topics.forEach((topic) => {
-      this.addSubscription(ws, topic, session);
+    topics.forEach((topicName) => {
+      this.addSubscription(ws, topicName, session);
     })
   }
 
@@ -212,8 +189,11 @@ export class SignalDurableObject extends DurableObject<Env> {
       topics: string[],
       session: SessionData
   ) {
-    topics.forEach((topic) => {
-      this.removeSubscription(ws, topic, session);
+    topics.forEach((topicName) => {
+      const subs = this.topics.get(topicName);
+      if (subs) {
+        subs.delete(ws);
+      }
     })
   }
 
@@ -237,6 +217,8 @@ export class SignalDurableObject extends DurableObject<Env> {
   }
 
   handlePublish(message: PublishMessage) {
+    if (!message.topic) return;
+    
     const receivers = this.topics.get(message.topic);
     if (!receivers || receivers.size === 0) return;
 
@@ -251,16 +233,15 @@ export class SignalDurableObject extends DurableObject<Env> {
   }
 
   async send(ws: WebSocket, message: any) {
+    if (ws.readyState !== wsReadyStateConnecting && ws.readyState !== wsReadyStateOpen) {
+      ws.close()
+      return
+    }
     try {
       ws.send(JSON.stringify(message));
-    } catch (err) {
-      this.handleError('Error sending message', err);
+    } catch (e) {
+      ws.close()
     }
-  }
-
-  private handleError(message: string, error: unknown): void {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error(`${message}:`, errorMessage);
   }
 
   private cleanupSession(session: SessionData): void {
@@ -274,7 +255,7 @@ export class SignalDurableObject extends DurableObject<Env> {
     const session = this.sessions.get(ws);
     if (!session) return;
 
-    session.quit = true;
+    session.closed = true;
     this.cleanupSession(session);
 
     session.subscribedTopics.forEach((topic) => {

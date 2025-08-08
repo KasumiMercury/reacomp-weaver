@@ -1,27 +1,32 @@
 import {Hono} from 'hono'
 import {upgradeWebSocket} from "hono/cloudflare-workers";
+import {cors} from "hono/cors";
 
-const app = new Hono()
+type Env = {
+  Bindings: {
+    SIGNALING_ROOM: DurableObjectNamespace
+  }
+}
 
-app.get('/', (c) => {
-  return c.text('Hello Hono!')
+const app = new Hono<Env>()
+
+// app.get('/*', cors())
+
+app.get('/', (c) => c.text('okay'))
+
+app.get('/ws', async (c) => {
+  const upgradeHeader = c.req.header('Upgrade')
+  if (!upgradeHeader || upgradeHeader !== 'websocket') {
+    return c.text('Expected Upgrade: websocket', 426)
+  }
+
+  const roomId = c.env.SIGNALING_ROOM.idFromName('global-room')
+  const roomObject = c.env.SIGNALING_ROOM.get(roomId)
+
+  const url = new URL(c.req.url)
+  url.protocol = 'https:'
+  return roomObject.fetch(url.toString(), c.req.raw)
 })
 
-app.get(
-    '/signaling',
-    upgradeWebSocket((c) => {
-      return {
-        onMessage: (evt, ws) => {
-          ws.send('Received: ' + evt.data)
-        },
-        onClose: () => {
-          console.log('WebSocket connection closed')
-        },
-        onError: (err) => {
-          console.error('WebSocket error:', err)
-        }
-      }
-    })
-)
-
+export { SignalDurableObject } from './SignalDurableObject'
 export default app

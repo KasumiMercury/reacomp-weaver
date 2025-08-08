@@ -6,8 +6,8 @@
   "durable_objects": {
     "bindings": [
       {
-        "name": "SIGNALING",
-        "class_name": "SignalingDurableObject"
+        "name": "SIGNALING_ROOM",
+        "class_name": "SignalDurableObject"
       }
     ]
   }
