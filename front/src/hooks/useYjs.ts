@@ -30,7 +30,7 @@ export function useYjs(roomName: string) {
     
     const provider = new WebrtcProvider(roomName, ydoc, {
       signaling: [
-          'ws://localhost:4444'
+          process.env.NEXT_PUBLIC_WEBSOCKET_URL || 'ws://localhost:8787/ws'
       ],
       maxConns: 20,
       filterBcConns: true,
