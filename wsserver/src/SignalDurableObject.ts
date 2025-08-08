@@ -97,7 +97,7 @@ export class SignalDurableObject extends DurableObject<Env> {
       } else {
         session.pongReceived = false
         try {
-          (ws as any).ping()
+          this.send(ws, { type: 'ping' })
         } catch (e) {
           ws.close()
         }
@@ -108,10 +108,6 @@ export class SignalDurableObject extends DurableObject<Env> {
   }
 
   private setupEventListeners(ws: WebSocket, session: SessionData): void {
-    ws.addEventListener('pong', () => {
-      session.pongReceived = true
-    })
-
     ws.addEventListener('close', () => {
       this.cleanupSession(session);
       this.closeSession(ws);
